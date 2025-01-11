@@ -5,7 +5,7 @@ TODO:
 -> Gracefully handle shutting down of node
 
     => Notify the network about shutdown so that bootstraps can update DHT
-    => clean up of any resources (Trivial as Go has an in built garbage collector)
+    => Remove the offline nodes from the local DHT
 
 -> Instructions
 
