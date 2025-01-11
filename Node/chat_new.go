@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"os"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -22,6 +25,136 @@ import (
 )
 
 var logger = log.Logger("rendezvous")
+
+type Message struct {
+	Sender     string `json:"sender"`
+	Message_Id int32  `json:"m_id"`
+	Content    string `json:"content"`
+}
+
+func (m *Message) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&struct {
+		Sender     string `json:"sender"`
+		Message_Id int32  `json:"m_id"`
+		Content    string `json:"content"`
+	}{
+		Sender:     m.Sender,
+		Message_Id: m.Message_Id,
+		Content:    m.Content,
+	})
+}
+
+func (m *Message) UnmarshalJSON(data []byte) error {
+	aux := &struct {
+		Sender     string `json:"sender"`
+		Message_Id int32  `json:"m_id"`
+		Content    string `json:"content"`
+	}{}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	m.Sender = aux.Sender
+	m.Message_Id = aux.Message_Id
+	m.Content = aux.Content
+	return nil
+}
+
+var (
+	User          host.Host
+	m_id          int32                       = 1
+	database      map[string]map[int32]string = make(map[string]map[int32]string)
+	peerArray     []peer.AddrInfo             = []peer.AddrInfo{}
+	peerSet       map[peer.ID]bool            = make(map[peer.ID]bool)
+	peerArrayLock sync.Mutex                  // Mutex to protect peerArray
+	peerSetLock   sync.Mutex                  // Mutex to protect peerSet
+)
+
+func gossipProtocol(stream network.Stream) {
+	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+	go gossipExecute(rw, stream)
+}
+
+func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
+	for {
+		line, err := rw.ReadString('\n')
+		if err != nil {
+			fmt.Println("User Went Offline:", err)
+			return
+		}
+
+		if line == "" || line == "\n" {
+			continue
+		}
+
+		// Deserialize the JSON object
+		var message Message
+		err = json.Unmarshal([]byte(line), &message)
+		if err != nil {
+			fmt.Println("Failed to parse JSON:", err)
+			continue
+		}
+
+		// Check if the hash map for a particular user exists in the local memory
+		if _, exists := database[message.Sender]; !exists {
+			database[message.Sender] = make(map[int32]string)
+		}
+
+		// Check Data base
+		if _, exists := database[message.Sender][message.Message_Id]; exists {
+			continue
+		}
+
+		// Add the message to the database
+		database[message.Sender][message.Message_Id] = message.Content
+
+		// For each neighbor
+		peerArrayLock.Lock()
+		for _, peer := range peerArray {
+			// Skip the sender since they already know
+			if peer.ID == strm.Conn().RemotePeer() {
+				continue
+			}
+
+			// Create a new stream for the peer
+			stream, err := User.NewStream(context.Background(), peer.ID, "/gossip/1.0.0")
+			if err != nil {
+				continue
+			}
+
+			// Create a buffered writer for the stream
+			rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+
+			// Serialize the message to JSON
+			data, err := json.Marshal(message)
+			if err != nil {
+				fmt.Println("Failed to serialize message:", err)
+				stream.Close()
+				continue
+			}
+
+			// Send the serialized message
+			_, err = rw.WriteString(string(data) + "\n")
+			if err != nil {
+				fmt.Println("Failed to send message to peer:", peer.ID, err)
+				stream.Close()
+				continue
+			}
+
+			// Flush the buffer to ensure data is sent
+			err = rw.Flush()
+			if err != nil {
+				fmt.Println("Failed to flush data to peer:", peer.ID, err)
+				stream.Close()
+				continue
+			}
+
+			stream.Close()
+		}
+		peerArrayLock.Unlock()
+	}
+}
 
 func readData(rw *bufio.ReadWriter) {
 	for {
@@ -71,8 +204,9 @@ func main() {
 
 	logger.Info("Node created with the ID: ", host.ID().String())
 
-	// Setting a handler
-	host.SetStreamHandler(protocol.ID(config.ProtocolID), messageProtocol)
+	// Setting a handlers
+	host.SetStreamHandler(protocol.ID(config.ProtocolID+"/message"), messageProtocol)
+	host.SetStreamHandler(protocol.ID(config.ProtocolID+"/gossip"), gossipProtocol)
 
 	// Extract Bootstrap peers
 	ctx := context.Background()
@@ -109,9 +243,6 @@ func main() {
 
 	logger.Debug("Starting the Peer discovery")
 
-	peerArray := make([]peer.AddrInfo, 0)
-	peerSet := make(map[peer.ID]bool)
-
 	go func() {
 
 		for {
@@ -125,20 +256,21 @@ func main() {
 
 			for peer := range peerChan {
 
-				if peer.ID == host.ID() {
-					continue
-				}
-
+				peerSetLock.Lock()
 				if _, exists := peerSet[peer.ID]; exists {
+					peerSetLock.Unlock()
 					continue
 				}
+				peerSet[peer.ID] = true
+				peerArrayLock.Lock()
+				peerArray = append(peerArray, peer)
+				peerArrayLock.Unlock()
+				peerSetLock.Unlock()
 
 				if err := host.Connect(ctx, peer); err != nil {
 					logger.Warn("Failed to connect to peer:", err)
 				} else {
 					logger.Info("Connected to peer:", peer.ID)
-					peerArray = append(peerArray, peer)
-					peerSet[peer.ID] = true
 				}
 			}
 
@@ -175,7 +307,7 @@ func main() {
 			fmt.Println(peerArray[int(index)].ID)
 
 			// Establish the Stream
-			newStream, err := host.NewStream(ctx, peerArray[int(index)].ID, protocol.ID(config.ProtocolID))
+			newStream, err := host.NewStream(ctx, peerArray[int(index)].ID, protocol.ID(config.ProtocolID+"/message"))
 			if err != nil {
 				println("Error occured creating a stream!\n")
 				continue
@@ -225,6 +357,6 @@ func main() {
 
 /*
 
-Gracefully handle the exit of the users
+Gracefully handle the exit of the users from the network
 
 */
