@@ -1,4 +1,4 @@
-## This is a mini demonstration of a p2p messaging application with node discovery and messaging. Made using go-libp2p
+## This is a demonstration of a p2p messaging application with node discovery and messaging. Made using go-libp2p
 
 TODO:
 
