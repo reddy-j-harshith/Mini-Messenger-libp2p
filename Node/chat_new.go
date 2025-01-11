@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"os"
 	"time"
@@ -78,11 +79,18 @@ func gossipProtocol(stream network.Stream) {
 
 }
 
+var peerMutex sync.RWMutex
+
 func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovered from panic in gossipExecute:", r)
+		}
+	}()
+
 	for {
 		line, err := rw.ReadString('\n')
 		if err != nil {
-			fmt.Println("User Went Offline:", err)
 			return
 		}
 
@@ -90,7 +98,6 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 			continue
 		}
 
-		// Deserialize the JSON object
 		var message Message
 		err = json.Unmarshal([]byte(line), &message)
 		if err != nil {
@@ -98,32 +105,47 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 			continue
 		}
 
-		// Check Data base
-		if _, exists := database[message.Sender][message.Message_Id]; exists {
+		// Database Access with Mutex
+		peerMutex.RLock()
+		_, exists := database[message.Sender]
+		peerMutex.RUnlock()
+
+		if !exists {
+			peerMutex.Lock()
+			database[message.Sender] = make(map[int32]string)
+			peerMutex.Unlock()
+		}
+
+		peerMutex.RLock()
+		_, exists = database[message.Sender][message.Message_Id]
+		peerMutex.RUnlock()
+
+		if exists {
 			continue
 		}
 
-		// Add the message to the database
+		peerMutex.Lock()
 		database[message.Sender][message.Message_Id] = message.Content
+		peerMutex.Unlock()
 
-		// For each neighbor
-		for _, peer := range peerArray {
+		fmt.Printf("\x1b[32m> Message Sent by: %s\n> Message: %s\n> Sent from %s\x1b[0m\n", message.Sender, message.Content, strm.Conn().RemotePeer())
 
-			// Skip the sender since he already knows
-			if peer.ID == strm.Conn().RemotePeer() {
+		peerMutex.RLock()
+		peers := peerArray
+		peerMutex.RUnlock()
+
+		for _, peer := range peers {
+			if peer.ID == strm.Conn().RemotePeer() || peer.ID.String() == message.Sender {
 				continue
 			}
 
-			// Create a new stream for the peer
-			stream, err := User.NewStream(context.Background(), peer.ID, "/gossip/1.0.0")
+			stream, err := User.NewStream(context.Background(), peer.ID, protocol.ID("/chat/1.0.0/gossip"))
 			if err != nil {
 				continue
 			}
 
-			// Create a buffered writer for the stream
 			rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
-			// Serialize the message to JSON
 			data, err := json.Marshal(message)
 			if err != nil {
 				fmt.Println("Failed to serialize message:", err)
@@ -131,7 +153,6 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 				continue
 			}
 
-			// Send the serialized message
 			_, err = rw.WriteString(string(data) + "\n")
 			if err != nil {
 				fmt.Println("Failed to send message to peer:", peer.ID, err)
@@ -139,7 +160,6 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 				continue
 			}
 
-			// Flush the buffer to ensure data is sent
 			err = rw.Flush()
 			if err != nil {
 				fmt.Println("Failed to flush data to peer:", peer.ID, err)
@@ -176,9 +196,7 @@ func messageProtocol(stream network.Stream) {
 	// go writeData(rw)
 
 }
-
 func main() {
-
 	log.SetAllLoggers(log.LevelWarn)
 	log.SetLogLevel("rendezvous", "info")
 
@@ -194,6 +212,10 @@ func main() {
 			[]multiaddr.Multiaddr(config.ListenAddresses)...,
 		),
 	)
+
+	// Assigning this user globally for the node
+	User = host
+
 	if err != nil {
 		panic(err)
 	}
@@ -240,7 +262,6 @@ func main() {
 	logger.Debug("Starting the Peer discovery")
 
 	go func() {
-
 		for {
 			// Create a peer channel for all the available users
 			peerChan, err := routingDiscovery.FindPeers(ctx, config.RendezvousString)
@@ -251,7 +272,6 @@ func main() {
 			}
 
 			for peer := range peerChan {
-
 				if peer.ID == host.ID() {
 					continue
 				}
@@ -278,80 +298,157 @@ func main() {
 	var userStream network.Stream = nil
 
 	for {
+		// Mode Selection: Direct Message or Gossip Mode
+		print("> Select Mode (1: Direct Message, 2: Gossip Mode, 3: Exit)\n> ")
+		mode, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading the input")
+			continue
+		}
 
-		if userStream == nil {
+		mode = strings.TrimSpace(mode)
 
-			// Taking the input
-			print("> Enter user index\n>")
+		// Exit the program if selected
+		if mode == "3" {
+			fmt.Println("Exiting...")
+			break
+		}
 
-			input, err := reader.ReadString('\n')
+		// Handle Direct Message Mode
+		if mode == "1" {
+			// Direct Message logic (same as before)
+			for {
+				if userStream == nil {
+					// Taking the input to select user index
+					print("> Enter user index\n>")
+					input, err := reader.ReadString('\n')
+					if err != nil {
+						fmt.Println("Error reading the input")
+						continue
+					}
+
+					index, _ := strconv.ParseInt(input, 10, 32)
+
+					if index > int64(len(peerArray)) {
+						println("Please Enter a valid index!!")
+						continue
+					}
+
+					logger.Info("Connecting to user")
+
+					// Establish the Stream
+					newStream, err := host.NewStream(ctx, peerArray[int(index)].ID, protocol.ID(config.ProtocolID+"/message"))
+					if err != nil {
+						println("Error occurred creating a stream!\n")
+						continue
+					}
+
+					// Set the current stream
+					userStream = newStream
+
+					logger.Info("Connected to: ", peerArray[int(index)])
+				}
+
+				println("> Enter Message for the user (type 'Cancel' to go back to mode selection)")
+
+				rw := bufio.NewReadWriter(bufio.NewReader(userStream), bufio.NewWriter(userStream))
+
+				fmt.Print("> ")
+				sendData, err := reader.ReadString('\n')
+				if err != nil {
+					fmt.Println("Error reading from stdin:", err)
+					return
+				}
+
+				sendData = strings.TrimSpace(sendData)
+
+				if sendData == "Cancel" {
+					userStream.Close()
+					userStream = nil
+					break
+				}
+
+				// Send the message
+				_, err = rw.WriteString(fmt.Sprintf("> Message from: %s => %s\n", host.ID().String(), sendData))
+				if err != nil {
+					fmt.Println("Error writing to buffer:", err)
+					continue
+				}
+
+				// Flush the errors
+				err = rw.Flush()
+				if err != nil {
+					fmt.Println("Error flushing buffer:", err)
+					continue
+				}
+			}
+		}
+
+		// Handle Gossip Mode
+		if mode == "2" {
+			// Taking the input to send a message in gossip mode
+			println("> Enter Message for Gossip (type 'Cancel' to go back to mode selection)")
+
+			sendData, err := reader.ReadString('\n')
 			if err != nil {
-				fmt.Println("Error reading the input")
+				fmt.Println("Error reading from stdin:", err)
 				continue
 			}
 
-			index, _ := strconv.ParseInt(input, 10, 32)
+			sendData = strings.TrimSpace(sendData)
 
-			if index > int64(len(peerArray)) {
-				println("Please Enter a valid index!!")
-				continue
+			if sendData == "Cancel" {
+				break
 			}
 
-			logger.Info("Connecting to user")
+			// Increment global m_id for Gossip messages
+			m_id++
 
-			fmt.Println(peerArray[int(index)].ID)
-
-			// Establish the Stream
-			newStream, err := host.NewStream(ctx, peerArray[int(index)].ID, protocol.ID(config.ProtocolID+"/message"))
-			if err != nil {
-				println("Error occured creating a stream!\n")
-				continue
+			// Create a new Message
+			message := Message{
+				Sender:     host.ID().String(),
+				Message_Id: m_id,
+				Content:    sendData,
 			}
 
-			// Set the current stream
-			userStream = newStream
+			// Send the message to all connected peers (Gossip)
+			for _, peer := range peerArray {
+				// Create a new stream for the peer
+				stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID+"/gossip"))
+				if err != nil {
+					fmt.Println("Failed to create stream with peer:", peer.ID)
+					continue
+				}
 
-			logger.Info("Connected to: ", peerArray[int(index)])
-		}
+				// Create a buffered writer for the stream
+				rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
-		println("> Enter Message for the user")
+				// Serialize the message to JSON
+				data, err := json.Marshal(message)
+				if err != nil {
+					fmt.Println("Failed to serialize message:", err)
+					stream.Close()
+					continue
+				}
 
-		rw := bufio.NewReadWriter(bufio.NewReader(userStream), bufio.NewWriter(userStream))
+				// Send the serialized message
+				_, err = rw.WriteString(string(data) + "\n")
+				if err != nil {
+					fmt.Println("Failed to send message to peer:", peer.ID, err)
+					stream.Close()
+					continue
+				}
 
-		fmt.Print("> ")
-		sendData, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading from stdin:", err)
-			return
-		}
+				// Flush the buffer to ensure data is sent
+				err = rw.Flush()
+				if err != nil {
+					fmt.Println("Failed to flush data to peer:", peer.ID, err)
+					stream.Close()
+					continue
+				}
 
-		sendData = strings.TrimSpace(sendData)
-
-		if sendData == "Cancel" {
-			userStream.Close()
-			userStream = nil
-			continue
-		}
-
-		// Send the message
-		_, err = rw.WriteString(fmt.Sprintf("> Message from: %s => %s\n", host.ID().String(), sendData))
-		if err != nil {
-			fmt.Println("Error writing to buffer:", err)
-			continue
-		}
-
-		// Flush the errors
-		err = rw.Flush()
-		if err != nil {
-			fmt.Println("Error flushing buffer:", err)
-			continue
+				stream.Close()
+			}
 		}
 	}
-
 }
-
-/*
-
-Gracefully handle the exit of the users
-
-*/
