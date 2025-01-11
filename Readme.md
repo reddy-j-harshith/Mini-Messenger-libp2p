@@ -1,6 +1,6 @@
 ## This is a demonstration of a p2p messaging application with node discovery and messaging. Made using go-libp2p
 
-This project also includes the gossip protocol to relay messages throughout the network
+Manually implemented the Gossip-protocol for propagating throughout the entire network
 
 TODO:
 
