@@ -6,3 +6,12 @@ TODO:
 
     => Notify the network about shutdown so that bootstraps can update DHT
     => clean up of any resources (Trivial as Go has an in built garbage collector)
+
+-> Instructions
+
+    => go mod init Messenger
+    => go get github.com/libp2p/go-libp2p
+    => go get github.com/libp2p/go-libp2p-kad-dht
+    => go get github.com/ipfs/go-log/v2
+    => go get github.com/multiformats/go-multiaddr
+    => go get github.com/libp2p/go-libp2p/core
