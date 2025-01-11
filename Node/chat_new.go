@@ -66,6 +66,7 @@ var User host.Host
 
 // Make the message database
 var m_id int32 = 1
+var least map[string]int32 = map[string]int32{}
 var database map[string]map[int32]string = map[string]map[int32]string{}
 
 // Maintain a set of neighbors
@@ -102,6 +103,19 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 		err = json.Unmarshal([]byte(line), &message)
 		if err != nil {
 			fmt.Println("Failed to parse JSON:", err)
+			continue
+		}
+
+		peerMutex.RLock()
+		small, exist := least[message.Sender]
+		peerMutex.RUnlock()
+
+		if !exist || message.Message_Id > small {
+			peerMutex.Lock()
+			least[message.Sender] = message.Message_Id
+			peerMutex.Unlock()
+		} else {
+			// Skip as the message might be very old or already reached
 			continue
 		}
 
