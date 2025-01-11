@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"os"
 	"time"
@@ -61,19 +60,22 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-var (
-	User          host.Host
-	m_id          int32                       = 1
-	database      map[string]map[int32]string = make(map[string]map[int32]string)
-	peerArray     []peer.AddrInfo             = []peer.AddrInfo{}
-	peerSet       map[peer.ID]bool            = make(map[peer.ID]bool)
-	peerArrayLock sync.Mutex                  // Mutex to protect peerArray
-	peerSetLock   sync.Mutex                  // Mutex to protect peerSet
-)
+// Set the user
+var User host.Host
+
+// Make the message database
+var m_id int32 = 1
+var database map[string]map[int32]string = map[string]map[int32]string{}
+
+// Maintain a set of neighbors
+var peerArray []peer.AddrInfo = []peer.AddrInfo{}
+var peerSet map[peer.ID]bool = map[peer.ID]bool{}
 
 func gossipProtocol(stream network.Stream) {
+
 	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 	go gossipExecute(rw, stream)
+
 }
 
 func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
@@ -96,11 +98,6 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 			continue
 		}
 
-		// Check if the hash map for a particular user exists in the local memory
-		if _, exists := database[message.Sender]; !exists {
-			database[message.Sender] = make(map[int32]string)
-		}
-
 		// Check Data base
 		if _, exists := database[message.Sender][message.Message_Id]; exists {
 			continue
@@ -110,9 +107,9 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 		database[message.Sender][message.Message_Id] = message.Content
 
 		// For each neighbor
-		peerArrayLock.Lock()
 		for _, peer := range peerArray {
-			// Skip the sender since they already know
+
+			// Skip the sender since he already knows
 			if peer.ID == strm.Conn().RemotePeer() {
 				continue
 			}
@@ -152,7 +149,6 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 
 			stream.Close()
 		}
-		peerArrayLock.Unlock()
 	}
 }
 
@@ -256,21 +252,20 @@ func main() {
 
 			for peer := range peerChan {
 
-				peerSetLock.Lock()
-				if _, exists := peerSet[peer.ID]; exists {
-					peerSetLock.Unlock()
+				if peer.ID == host.ID() {
 					continue
 				}
-				peerSet[peer.ID] = true
-				peerArrayLock.Lock()
-				peerArray = append(peerArray, peer)
-				peerArrayLock.Unlock()
-				peerSetLock.Unlock()
+
+				if _, exists := peerSet[peer.ID]; exists {
+					continue
+				}
 
 				if err := host.Connect(ctx, peer); err != nil {
 					logger.Warn("Failed to connect to peer:", err)
 				} else {
 					logger.Info("Connected to peer:", peer.ID)
+					peerArray = append(peerArray, peer)
+					peerSet[peer.ID] = true
 				}
 			}
 
@@ -357,6 +352,6 @@ func main() {
 
 /*
 
-Gracefully handle the exit of the users from the network
+Gracefully handle the exit of the users
 
 */
