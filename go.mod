@@ -5,7 +5,7 @@ go 1.22.10
 require (
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/libp2p/go-libp2p v0.38.1
-	github.com/libp2p/go-libp2p-kad-dht v0.28.1
+	github.com/libp2p/go-libp2p-kad-dht v0.28.2
 	github.com/multiformats/go-multiaddr v0.14.0
 )
 
