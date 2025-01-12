@@ -61,17 +61,22 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Set the user
-var User host.Host
+var (
+	// Set the user
+	User host.Host
 
-// Make the message database
-var m_id int32 = 1
-var least map[string]int32 = map[string]int32{}
-var database map[string]map[int32]string = map[string]map[int32]string{}
+	// Local DHT
+	kademliaDHT *dht.IpfsDHT
 
-// Maintain a set of neighbors
-var peerArray []peer.AddrInfo = []peer.AddrInfo{}
-var peerSet map[peer.ID]bool = map[peer.ID]bool{}
+	// Make the message database
+	m_id     int32                       = 1
+	least    map[string]int32            = map[string]int32{}
+	database map[string]map[int32]string = map[string]map[int32]string{}
+
+	// Maintain a set of neighbors
+	peerArray []peer.AddrInfo  = []peer.AddrInfo{}
+	peerSet   map[peer.ID]bool = map[peer.ID]bool{}
+)
 
 func gossipProtocol(stream network.Stream) {
 
@@ -251,7 +256,7 @@ func main() {
 	}
 
 	// Create a local dht with custom buket size
-	kademliaDHT, err := dht.New(ctx, host, dht.BootstrapPeers(bootstrapPeers...), dht.ProtocolPrefix("/custom-dht"), dht.BucketSize(5))
+	kademliaDHT, err = dht.New(ctx, host, dht.BootstrapPeers(bootstrapPeers...), dht.ProtocolPrefix("/custom-dht"), dht.BucketSize(5))
 	if err != nil {
 		panic(err)
 	}
@@ -297,7 +302,7 @@ func main() {
 				if err := host.Connect(ctx, peer); err != nil {
 					logger.Warn("Failed to connect to peer:", err)
 				} else {
-					logger.Info("Connected to peer:", peer.ID)
+					logger.Info("Connected to peer:", peer.ID.String())
 					peerArray = append(peerArray, peer)
 					peerSet[peer.ID] = true
 				}
@@ -330,9 +335,13 @@ func main() {
 
 		// Handle Direct Message Mode
 		if mode == "1" {
+
+			fmt.Print(peerArray)
+
 			// Direct Message logic (same as before)
 			for {
 				if userStream == nil {
+
 					// Taking the input to select user index
 					print("> Enter user index\n>")
 					input, err := reader.ReadString('\n')
@@ -341,7 +350,12 @@ func main() {
 						continue
 					}
 
-					index, _ := strconv.ParseInt(input, 10, 32)
+					input = strings.TrimSpace(input)
+					input = strings.TrimRight(input, "\n")
+
+					index, _ := strconv.ParseInt(input, 10, 64)
+
+					fmt.Println(index)
 
 					if index > int64(len(peerArray)) {
 						println("Please Enter a valid index!!")
@@ -351,7 +365,7 @@ func main() {
 					logger.Info("Connecting to user")
 
 					// Establish the Stream
-					newStream, err := host.NewStream(ctx, peerArray[int(index)].ID, protocol.ID(config.ProtocolID+"/message"))
+					newStream, err := host.NewStream(ctx, peerArray[index].ID, protocol.ID(config.ProtocolID+"/message"))
 					if err != nil {
 						println("Error occurred creating a stream!\n")
 						continue
@@ -360,7 +374,7 @@ func main() {
 					// Set the current stream
 					userStream = newStream
 
-					logger.Info("Connected to: ", peerArray[int(index)])
+					logger.Info("Connected to: ", peerArray[index].ID.String())
 				}
 
 				println("> Enter Message for the user (type 'Cancel' to go back to mode selection)")
