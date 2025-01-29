@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -224,20 +226,41 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("Enter the private key:")
+
+	reader := bufio.NewReader(os.Stdin)
+	privKeyString, _ := reader.ReadString('\n')
+
+	privKeyString = strings.TrimSpace(privKeyString)
+
+	privKeyBytes, _ := hex.DecodeString(privKeyString)
+
+	privKey, _ := crypto.UnmarshalSecp256k1PrivateKey(privKeyBytes)
 
 	// Creating the current node
-	host, err := libp2p.New(
+	host, _ := libp2p.New(
+		libp2p.Identity(privKey),
 		libp2p.ListenAddrs(
 			[]multiaddr.Multiaddr(config.ListenAddresses)...,
 		),
 	)
 
-	// Assigning this user globally for the node
-	User = host
+	// Extract the raw public key
+	pubKey := privKey.GetPublic()
+	pubBytes, err := pubKey.Raw()
+	if err != nil {
+		logger.Fatal("Failed to get raw public key:", err)
+	}
+	fmt.Println("Public Key (Hex):", hex.EncodeToString(pubBytes)) // Extract the raw public key
 
+	nodeID, err := peer.IDFromPublicKey(pubKey)
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("Computed Node ID:", nodeID.String())
+
+	// Assigning this user globally for the node
+	User = host
 
 	logger.Info("Node created with the ID: ", host.ID().String())
 
@@ -313,7 +336,6 @@ func main() {
 		}
 	}()
 
-	reader := bufio.NewReader(os.Stdin)
 	var userStream network.Stream = nil
 
 	for {
@@ -336,7 +358,7 @@ func main() {
 		// Handle Direct Message Mode
 		if mode == "1" {
 
-			fmt.Print(peerArray)
+			fmt.Print(kademliaDHT)
 
 			// Direct Message logic (same as before)
 			for {
@@ -351,13 +373,12 @@ func main() {
 					}
 
 					input = strings.TrimSpace(input)
-					input = strings.TrimRight(input, "\n")
 
 					index, _ := strconv.ParseInt(input, 10, 64)
 
 					fmt.Println(index)
 
-					if index > int64(len(peerArray)) {
+					if index >= int64(len(peerArray)) {
 						println("Please Enter a valid index!!")
 						continue
 					}
