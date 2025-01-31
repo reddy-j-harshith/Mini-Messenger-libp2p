@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -47,8 +46,8 @@ var (
 	database map[string]map[int32]string = map[string]map[int32]string{}
 
 	// Maintain a set of neighbors
-	peerArray []peer.AddrInfo  = []peer.AddrInfo{}
-	peerSet   map[peer.ID]bool = map[peer.ID]bool{}
+	peerArray []peer.AddrInfo          = []peer.AddrInfo{}
+	peerSet   map[string]peer.AddrInfo = map[string]peer.AddrInfo{}
 )
 
 func gossipProtocol(stream network.Stream) {
@@ -275,7 +274,7 @@ func main() {
 					continue
 				}
 
-				if _, exists := peerSet[peer.ID]; exists {
+				if _, exists := peerSet[peer.ID.String()]; exists {
 					continue
 				}
 
@@ -284,7 +283,7 @@ func main() {
 				} else {
 					logger.Info("Connected to peer:", peer.ID.String())
 					peerArray = append(peerArray, peer)
-					peerSet[peer.ID] = true
+					peerSet[peer.ID.String()] = peer
 				}
 			}
 
@@ -315,14 +314,12 @@ func main() {
 		// Handle Direct Message Mode
 		if mode == "1" {
 
-			fmt.Print(kademliaDHT)
-
 			// Direct Message logic (same as before)
 			for {
 				if userStream == nil {
 
 					// Taking the input to select user index
-					print("> Enter user index\n>")
+					print("> Enter User Node ID\n>")
 					input, err := reader.ReadString('\n')
 					if err != nil {
 						fmt.Println("Error reading the input")
@@ -331,19 +328,16 @@ func main() {
 
 					input = strings.TrimSpace(input)
 
-					index, _ := strconv.ParseInt(input, 10, 64)
-
-					fmt.Println(index)
-
-					if index >= int64(len(peerArray)) {
-						println("Please Enter a valid index!!")
-						continue
-					}
-
 					logger.Info("Connecting to user")
 
 					// Establish the Stream
-					newStream, err := host.NewStream(ctx, peerArray[index].ID, protocol.ID(config.ProtocolID+"/message"))
+					targetUser, exists := peerSet[input]
+
+					if !exists {
+						println("User not found!")
+						continue
+					}
+					newStream, err := host.NewStream(ctx, targetUser.ID, protocol.ID(config.ProtocolID+"/message"))
 					if err != nil {
 						println("Error occurred creating a stream!\n")
 						continue
@@ -352,7 +346,7 @@ func main() {
 					// Set the current stream
 					userStream = newStream
 
-					logger.Info("Connected to: ", peerArray[index].ID.String())
+					logger.Info("Connected to: ", targetUser.ID.String())
 				}
 
 				println("> Enter Message for the user (type 'Cancel' to go back to mode selection)")
