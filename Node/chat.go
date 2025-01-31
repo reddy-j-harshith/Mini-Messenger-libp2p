@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 
 	"os"
 	"time"
@@ -48,6 +50,9 @@ var (
 	// Maintain a set of neighbors
 	peerArray []peer.AddrInfo          = []peer.AddrInfo{}
 	peerSet   map[string]peer.AddrInfo = map[string]peer.AddrInfo{}
+
+	ctx    context.Context
+	cancel context.CancelFunc
 )
 
 func gossipProtocol(stream network.Stream) {
@@ -116,7 +121,7 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 				continue
 			}
 
-			stream, err := User.NewStream(context.Background(), peer.ID, protocol.ID("/chat/1.0.0/gossip"))
+			stream, err := User.NewStream(ctx, peer.ID, protocol.ID("/chat/1.0.0/gossip"))
 			if err != nil {
 				continue
 			}
@@ -149,6 +154,37 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 	}
 }
 
+// Gracefully handle shutdown
+func handleShutdown(host host.Host) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	<-c // Block until a signal is received
+
+	fmt.Println("\nGracefully shutting down...")
+
+	// Inform bootstrap peers
+	for _, peerInfo := range peerArray {
+		fmt.Println("Notifying peer:", peerInfo.ID.String())
+		stream, err := host.NewStream(ctx, peerInfo.ID, protocol.ID("/chat/1.0.0/exit"))
+		if err == nil {
+			rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+			_, _ = rw.WriteString(fmt.Sprintf("> Node %s is shutting down\n", host.ID().String()))
+			_ = rw.Flush()
+			stream.Close()
+		}
+	}
+
+	// Cancel context to stop background processes
+	cancel()
+
+	// Close the host
+	_ = host.Close()
+
+	fmt.Println("Shutdown complete.")
+	os.Exit(0)
+}
+
 func readData(rw *bufio.ReadWriter) {
 	for {
 		str, err := rw.ReadString('\n')
@@ -174,6 +210,7 @@ func messageProtocol(stream network.Stream) {
 
 }
 func main() {
+	ctx, cancel = context.WithCancel(context.Background())
 	log.SetAllLoggers(log.LevelWarn)
 	log.SetLogLevel("rendezvous", "info")
 
@@ -225,7 +262,6 @@ func main() {
 	host.SetStreamHandler(protocol.ID(config.ProtocolID+"/gossip"), gossipProtocol)
 
 	// Extract Bootstrap peers
-	ctx := context.Background()
 	bootstrapPeers := make([]peer.AddrInfo, len(config.BootstrapPeers))
 
 	// Add the Bootstrap peers to the peer slice
@@ -256,6 +292,8 @@ func main() {
 	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
 	dutil.Advertise(ctx, routingDiscovery, config.RendezvousString)
 	logger.Debug("Successfully Announced")
+
+	go handleShutdown(host)
 
 	logger.Debug("Starting the Peer discovery")
 
