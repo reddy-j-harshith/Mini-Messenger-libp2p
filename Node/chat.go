@@ -34,35 +34,6 @@ type Message struct {
 	Content    string `json:"content"`
 }
 
-func (m *Message) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&struct {
-		Sender     string `json:"sender"`
-		Message_Id int32  `json:"m_id"`
-		Content    string `json:"content"`
-	}{
-		Sender:     m.Sender,
-		Message_Id: m.Message_Id,
-		Content:    m.Content,
-	})
-}
-
-func (m *Message) UnmarshalJSON(data []byte) error {
-	aux := &struct {
-		Sender     string `json:"sender"`
-		Message_Id int32  `json:"m_id"`
-		Content    string `json:"content"`
-	}{}
-
-	if err := json.Unmarshal(data, aux); err != nil {
-		return err
-	}
-
-	m.Sender = aux.Sender
-	m.Message_Id = aux.Message_Id
-	m.Content = aux.Content
-	return nil
-}
-
 var (
 	// Set the user
 	User host.Host
@@ -113,40 +84,26 @@ func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 			continue
 		}
 
-		peerMutex.RLock()
-		small, exist := least[message.Sender]
-		peerMutex.RUnlock()
-
-		if !exist || message.Message_Id > small {
-			peerMutex.Lock()
+		peerMutex.Lock()
+		if small, exist := least[message.Sender]; !exist || message.Message_Id > small {
 			least[message.Sender] = message.Message_Id
-			peerMutex.Unlock()
 		} else {
-			// Skip as the message might be very old or already reached
+			peerMutex.Unlock()
 			continue
 		}
+		peerMutex.Unlock()
 
 		// Database Access with Mutex
-		peerMutex.RLock()
-		_, exists := database[message.Sender]
-		peerMutex.RUnlock()
-
-		if !exists {
-			peerMutex.Lock()
-			database[message.Sender] = make(map[int32]string)
-			peerMutex.Unlock()
-		}
-
-		peerMutex.RLock()
-		_, exists = database[message.Sender][message.Message_Id]
-		peerMutex.RUnlock()
-
-		if exists {
-			continue
-		}
-
 		peerMutex.Lock()
-		database[message.Sender][message.Message_Id] = message.Content
+		if _, exists := database[message.Sender]; !exists {
+			database[message.Sender] = make(map[int32]string)
+			if _, exists := database[message.Sender][message.Message_Id]; !exists {
+				database[message.Sender][message.Message_Id] = message.Content
+			} else {
+				peerMutex.Unlock()
+				continue
+			}
+		}
 		peerMutex.Unlock()
 
 		fmt.Printf("\x1b[32m> Message Sent by: %s\n> Message: %s\n> Sent from %s\x1b[0m\n", message.Sender, message.Content, strm.Conn().RemotePeer())
