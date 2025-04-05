@@ -43,9 +43,10 @@ var (
 	kademliaDHT *dht.IpfsDHT
 
 	// Make the message database
-	m_id     int32                       = 1
-	least    map[string]int32            = map[string]int32{}
-	database map[string]map[int32]string = map[string]map[int32]string{}
+	m_id      int32                       = 1
+	least     map[string]int32            = map[string]int32{}
+	database  map[string]map[int32]string = map[string]map[int32]string{}
+	peerMutex sync.RWMutex
 
 	// Maintain a set of neighbors
 	peerArray []peer.AddrInfo          = []peer.AddrInfo{}
@@ -61,8 +62,6 @@ func gossipProtocol(stream network.Stream) {
 	go gossipExecute(rw, stream)
 
 }
-
-var peerMutex sync.RWMutex
 
 func gossipExecute(rw *bufio.ReadWriter, strm network.Stream) {
 	defer func() {
@@ -219,13 +218,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Enter the private key:")
 
+	fmt.Println("Enter the private key:")
 	reader := bufio.NewReader(os.Stdin)
 	privKeyString, _ := reader.ReadString('\n')
-
 	privKeyString = strings.TrimSpace(privKeyString)
-
 	privKeyBytes, _ := hex.DecodeString(privKeyString)
 
 	privKey, _ := crypto.UnmarshalSecp256k1PrivateKey(privKeyBytes)
